@@ -43,6 +43,10 @@ class Theme:
             self.surface = mix("FFFFFF", t["primary"], 0.035) if white_bg else t.get("surface", "FFFFFF")
             self.line = mix(bg, t["dark"], 0.13)
             self.tint = mix(bg if not white_bg else "FFFFFF", t["primary"], 0.09)
+        for _ in range(6):  # 注释、图表来源这类次要文字也要看得清
+            if contrast(self.muted, bg) >= 3.2:
+                break
+            self.muted = mix(self.muted, "FFFFFF" if self.dark_bg else t["dark"], 0.25)
         self.shadow = not self.dark_bg and luminance(bg) <= 0.92
         # 深色页上主色和底色撞色（例如海军蓝主色 + 海军蓝底），这一页改用辅色当主色
         if contrast(self.primary, bg) < 1.8 and contrast(self.secondary, bg) > contrast(self.primary, bg):

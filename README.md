@@ -1,7 +1,7 @@
 # xiaoma-ppt
 
-> 把 Markdown 套进你自己的 PPT 模板，生成「像模板本来就长这样」的可编辑 .pptx。任何能写代码的模型 / agent 都能用。
-> Turn Markdown into an editable .pptx that looks native to *your* corporate template — usable by any coding model or agent.
+> 把文档（Markdown、Word、txt、PDF……）套进你自己的 PPT 模板，生成「像模板本来就长这样」的可编辑 .pptx。任何能写代码的模型 / agent 都能用。
+> Turn Markdown / Word / plain text into an editable .pptx that looks native to *your* corporate template — usable by any coding model or agent.
 
 商用 PPT 的难点不是好看，是**和模板一致**：公司模板的颜色、字体、页眉页脚、logo、背景一样都不能动，内容还得排进模板留出来的地方。现有的 AI 做 PPT 工具大多是「换一套它自己的主题」，生成的东西拿到公司里没法用。
 
@@ -33,7 +33,17 @@ xiaoma-ppt 反过来：**版式从模板里找，颜色字体从模板里取，�
 **1. 拆模板（`inspect_template.py`）**
 自动认出每一页是封面、目录、章节、内容还是结尾；哪些文本框是要填字的槽位（标题、副标题、序号、目录条目），哪些是品牌名和页脚（原样保留）；从模板实际用到的颜色里按面积找出主色辅色，读出字体和圆角风格。最后算出每张内容页的**内容安全区**：避开标题、logo、页脚，再把背景图渲染出来按像素找出插画（吉祥物、山水、齿轮）一并避开。
 
-**2. 匹配内容（`plan.py`）**
+**2. 匹配内容（`convert.py` + `plan.py`）**
+内容不是 md 时先转成 md（下表），转出来的 md 可以直接看、直接改。
+
+| 格式 | 怎么认结构 |
+|---|---|
+| `.md` | 原样 |
+| `.docx` | 标题样式 / 大纲级别、列表、表格、加粗、引用样式、图片；没用标题样式的按编号和整段加粗猜 |
+| `.doc` `.rtf` `.odt` `.wps` `.html` | 先用 LibreOffice 转成 docx |
+| `.txt` | 自动识别 UTF-8 / GBK / UTF-16；按「第一章」「一、」「（一）」「1.1」「1.」「•」这类编号认标题和列表，制表符分隔的行认成表格 |
+| `.pdf` | pdftotext 抽文字后按 txt 处理，尽力而为（表格、分栏会乱） |
+
 md 的结构对应到模板页：`#` → 封面，`##` → 章节页（≥3 个时自动出目录），`###` → 内容页。内容的形态对应到版式：
 
 | 内容 | 版式 |
@@ -64,13 +74,13 @@ pip install -r requirements.txt
 
 E=engine
 python3 $E/inspect_template.py 你的模板.pptx --out work/        # 读 work/profile.md
-python3 $E/plan.py 内容.md work/profile.json --out deck.json    # 出草稿，逐页检查修改
+python3 $E/plan.py 内容.md work/profile.json --out deck.json    # 出草稿，逐页检查修改（内容.docx / 内容.txt / 内容.pdf 也行）
 python3 $E/build.py deck.json                                 # → out/deck.pptx
 python3 $E/lint.py out/deck.pptx                              # 全绿才交付
 python3 $E/render.py out/deck.pptx --out out/render           # 每页 JPG + 拼图
 ```
 
-更常见的用法是直接让 agent 来做：「用 xiaoma-ppt 把这份 md 套进这个模板，做一份汇报 PPT」。
+更常见的用法是直接让 agent 来做：「用 xiaoma-ppt 把这份 Word（或 md、txt）套进这个模板，做一份汇报 PPT」。
 
 ## 装进 agent
 
@@ -85,6 +95,7 @@ python3 $E/render.py out/deck.pptx --out out/render           # 每页 JPG + 拼
 |---|---|
 | `SKILL.md` | 入口：5 步工作流、7 条硬规矩、交付清单 |
 | `engine/inspect_template.py` | 拆模板 → `profile.json` / `profile.md` / 模板缩略图 |
+| `engine/convert.py` | txt / docx / doc / rtf / odt / wps / html / pdf → md |
 | `engine/plan.py` | md + 模板画像 → 草稿 `deck.json`（每页附选择理由） |
 | `engine/build.py` | 复制模板页、填槽位、画版式、写备注 → `.pptx` |
 | `engine/recipes.py` `draw.py` | 13 种版式：卡片、要点、大数字、流程、时间线、对比、图表、表格、金句、观点、正文、图文、分栏 |
@@ -92,7 +103,7 @@ python3 $E/render.py out/deck.pptx --out out/render           # 每页 JPG + 拼
 | `engine/render.py` | pptx → 每页 JPG + 拼图（缺字体时只在预览副本里替换） |
 | `engine/icons/` | 167 个线性图标（Lucide，ISC 协议），构建时按模板主色着色 |
 | `references/` | 匹配规则、审美标准与目视打分表、deck.json 字段、常见问题 |
-| `examples/` | 5 套行业模板 + 5 份示例的完整过程文件 + GLM 5.3 跨模型测试 |
+| `examples/` | 5 套行业模板 + 5 份示例的完整过程文件 + GLM 5.3 跨模型测试（md 输入、Word 输入各一轮） |
 | `tests/` | 回归测试（`python3 -m pytest tests -q`，不需要 LibreOffice） |
 
 ## 跨模型测试
@@ -104,6 +115,10 @@ python3 $E/render.py out/deck.pptx --out out/render           # 每页 JPG + 拼
 - 3 分 17 秒一次跑完，14 页，lint 全绿；数字逐个核对和原文一致，没有编造。
 - 它在草稿上做的修改都合理：图表高亮重点项、换了更贴切的图标、给目录补副标题、每页写备注。
 - 独立验收发现 2 个问题：删掉金句页标题后，标题旁的装饰竖条孤零零留着；草稿没有自动带演讲者备注。两个都已在引擎里修好。完整记录在 [TEST_REPORT.md](examples/cross-model-glm-5.3/TEST_REPORT.md)。
+
+**第二轮：Word 输入。** 给它一份没用任何标题样式的 Word（标题靠加粗、章节靠「一、」「（一）」编号），只说「把这份 Word 套进模板做一份经营总结 PPT」。它 6 分 46 秒做完 13 页，转出来的 md 和人工转换的结果逐字相同，数字全部和原文一致。见 [`examples/cross-model-glm-5.3-word`](examples/cross-model-glm-5.3-word/TEST_REPORT.md)：
+
+![GLM 5.3 用 Word 输入的产出](docs/gallery/cross-model-glm-5.3-word.jpg)
 
 ## License
 

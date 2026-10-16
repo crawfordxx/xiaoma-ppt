@@ -1,5 +1,6 @@
 """md + 模板画像 → 草稿 deck.json。用法：
     python3 plan.py content.md work/profile.json --out deck.json
+内容也可以是 txt / docx / doc / rtf / odt / wps / html / pdf：先用 convert.py 转成 md（存到 profile 旁边的 <文件名>.converted.md）。
 
 规则（详见 references/matching.md）：
   # 一级标题 → 封面；## 二级标题 → 章节页（≥3 个时生成目录）；### 三级标题 → 一页内容
@@ -13,6 +14,7 @@ import os
 import re
 
 from common import load_json, profile_template, save_json
+from convert import MD_EXT, convert, read_text
 
 DATE = re.compile(r"(19|20)\d{2}\s*[年./\-]\s*\d{1,2}|日期[：:]")
 NUM = re.compile(r"(?<![A-Za-z])([+\-]?\d[\d,]*(?:\.\d+)?)\s*(%|％|万亿|亿元|万元|万人次|万人|万户|万家|万次|万件|万台|万吨|亿|万|千|倍|x|X|k|K|\+|元|家|个|人次|人|户|天|小时|分钟|秒|年|次|项|款|座|所|台|吨|公里|处|场|km|GW|MW)?")
@@ -441,10 +443,15 @@ def pick_pages(prof):
             "content": light, "content_dark": dark, "ending": roles.get("ending", [])}
 
 
-def plan(md_path, prof_path, out):
-    md = open(md_path, encoding="utf-8-sig").read()
+def plan(src_path, prof_path, out):
+    name = os.path.splitext(os.path.basename(src_path))[0]
+    md_path = src_path
+    if not src_path.lower().endswith(MD_EXT):  # txt / docx / pdf ……先转成 md
+        md_path = convert(src_path, os.path.join(os.path.dirname(os.path.abspath(prof_path)), name + ".converted.md"))
+        print(f"  {os.path.basename(src_path)} 已转成 {md_path}：按它出草稿，结构认错了就改这份 md 再跑")
+    md = read_text(md_path)
     prof = load_json(prof_path)
-    doc = outline(parse(md), os.path.splitext(os.path.basename(md_path))[0])
+    doc = outline(parse(md), name)
     pages = pick_pages(prof)
     if not pages["content"]:
         raise SystemExit("模板里没识别出内容页，无法自动规划：先看 profile.md，手写 deck.json")
@@ -516,7 +523,7 @@ def plan(md_path, prof_path, out):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("md")
+    ap.add_argument("md", help="内容文件：md，或 txt / docx / pdf 等（自动转成 md）")
     ap.add_argument("profile")
     ap.add_argument("--out", default="deck.json")
     a = ap.parse_args()

@@ -6,6 +6,7 @@
   ❌ 文字互相压住（新文字之间、新文字压模板文字）  ❌ 模板示例字残留（XXXX / 标题 / 请输入…，或标题槽没改）
   ❌ 字号小于 10pt                               ❌ 文字和背景对比度 < 3（需要渲染，按真实像素算）
   ❌ 内容页空着                                  ⚠️ 单页字数过多 / 使用了模板以外的字体 / 构建时的提示
+  （对比度：模板自带的文字原样保留了模板颜色时只给 ⚠️，不要为了过检改模板的颜色）
 有 ❌ 时退出码为 1。
 """
 import argparse
@@ -111,9 +112,10 @@ def lint(path, do_render=True):
         page = i + 1
         info = rep["slides"][i] if rep and i < len(rep["slides"]) else {}
         fi = info.get("from")
-        tpl_ids = set()
+        tpl_ids, tpl_colors = set(), {}
         if tpl is not None and fi is not None:
             tpl_ids = {s.shape_id for s, _, _ in iter_shapes(tpl.slides[fi].shapes)}
+            tpl_colors = {s.shape_id: runs_info(s)[1] for s, _, _ in iter_shapes(tpl.slides[fi].shapes) if s.has_text_frame}
         ps = prof["slides"][fi] if prof and fi is not None else None
         tpl_texts = {t["text"] for t in ps["texts"]} if ps else set()
         new_text, old_text, chars = [], [], 0
@@ -147,7 +149,11 @@ def lint(path, do_render=True):
                 add(page, "warn", f"用了模板以外的字体 {f}：「{short}」")
             if imgs and colors and i < len(imgs):
                 r = bg_contrast(imgs[i], W, H, box, colors[0])
-                if r and r[0] < 3.0:
+                if r and r[0] < 3.0 and not is_new and colors[0] in tpl_colors.get(s.shape_id, ()):
+                    # 模板自己就是这个配色（例如白底金色序号）：规矩 1 是不改模板颜色，只提醒
+                    add(page, "warn", f"对比度 {r[0]:.1f} 偏低，但这是模板自带的配色（文字 #{colors[0]} / 背景 #{r[1]}），"
+                                      f"保留不改：「{short}」")
+                elif r and r[0] < 3.0:
                     add(page, "error", f"对比度 {r[0]:.1f}（文字 #{colors[0]} / 背景 #{r[1]}）看不清：「{short}」")
             (new_text if is_new else old_text).append((s, box, short))
         if ps and ps["role"] == "content" and new_count == 0:

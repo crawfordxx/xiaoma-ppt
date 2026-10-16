@@ -16,5 +16,5 @@ for pair in $EXAMPLES; do
   ex=${pair%%:*}; d=examples/$ex
   python3 engine/build.py $d/deck.json | sed "s/^/[$ex] /" | grep -v 已生成 || true
   python3 engine/render.py $d/out/deck.pptx --out $d/out/render --dpi 110 >/dev/null
-  python3 engine/lint.py $d/out/deck.pptx --no-render | tail -1 | sed "s/^/[$ex] lint /"
+  python3 engine/lint.py $d/out/deck.pptx | tail -1 | sed "s/^/[$ex] lint /"
 done

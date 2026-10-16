@@ -23,7 +23,7 @@ from common import emu, inch, iter_shapes, load_json, overlap, save_json, text_e
 from draw import Theme
 
 SAMPLE_RE = re.compile(r"X{3,}|x{4,}|^\s*(大?标题|副标题|小标题|正文|内容|content|title|subtitle|text)\s*$|"
-                       r"^.{0,6}(标题|副标题|正文|内容|说明|文字|描述|简介)(内容|文字)?\s*$|^\s*SUBTITLE\b|"
+                       r"^.{0,6}(标题|副标题|正文|内容|说明|文字|描述|简介)(内容|文字)?\s*$|\bSUB-?TITLE\b|"
                        r"(请|单击|点击|在此|此处)(输入|添加|编辑|替换)|click to|lorem|your (title|text)|"
                        r"标题文字|添加标题|输入标题|关键词|20XX|\bXX\b|^\s*0?\d\s*$", re.I)
 REL_ATTRS = [qn("r:embed"), qn("r:id"), qn("r:link"), qn("r:pict"), qn("r:dm"), qn("r:lo"), qn("r:qs"), qn("r:cs")]
@@ -277,7 +277,10 @@ def apply_slots(slide, spec, prof_slide, W, log):
     for t in prof_slide["texts"]:
         if t["key"] in filled or t["key"] in keep:
             continue
-        if SAMPLE_RE.search(t["text"] or "") or not t["text"]:
+        # 章节页、内容页上没填的副标题、日期位也是示例字（封面上常是装饰大字，不动）
+        unfilled = prof_slide["role"] in ("section", "content") and any(
+            t["key"] in (slots[k] if isinstance(slots[k], list) else [slots[k]]) for k in ("subtitle", "meta") if k in slots)
+        if SAMPLE_RE.search(t["text"] or "") or not t["text"] or unfilled:
             shape, _, _ = find_shape(slide, t["key"])
             if shape is not None:
                 remove(shape)
