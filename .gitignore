@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+.DS_Store
+tools/_art/
+# 生成过程的中间产物（每次运行都会重新生成）
+examples/*/out/render/
+examples/*/out/lint-render/
+examples/*/out/*.build.json
+examples/*/out/*.lint.json
+examples/*/work/template-render/
+work/
+out/
+!examples/*/work/
+!examples/*/out/
