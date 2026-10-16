@@ -17,7 +17,11 @@ from common import load_json, profile_template, save_json
 from convert import MD_EXT, convert, read_text
 
 DATE = re.compile(r"(19|20)\d{2}\s*[年./\-]\s*\d{1,2}|日期[：:]")
-NUM = re.compile(r"(?<![A-Za-z])([+\-]?\d[\d,]*(?:\.\d+)?)\s*(%|％|万亿|亿元|万元|万人次|万人|万户|万家|万次|万件|万台|万吨|亿|万|千|倍|x|X|k|K|\+|元|家|个|人次|人|户|天|小时|分钟|秒|年|次|项|款|座|所|台|吨|公里|处|场|km|GW|MW)?")
+UNITS = ("% ％ 亿千瓦时 万千瓦时 万亿 亿元 万元 万人次 万人 万户 万家 万次 万件 万台 万吨 万千瓦 千瓦时 千瓦 亿 万 千 倍 千克 克 毫秒 TOPS GB TB "
+         "mAh GWh MWh kWh nm mm km GW MW x X k K + 元 起 家 个 人次 人 户 天 小时 分钟 秒 年 次 项 款 座 所 台 吨 公里 处 场").split()
+# 长的单位放前面：「千克」「km」不能被「千」「k」先匹配走
+NUM = re.compile(r"(?<![A-Za-z])([+\-]?\d[\d,]*(?:\.\d+)?)\s*("
+                 + "|".join(re.escape(u) for u in sorted(UNITS, key=len, reverse=True)) + ")?")
 TIME = re.compile(r"^\s*(\d{4}\s*年\s*\d{1,2}\s*月|\d{4}\s*(年|\.|/|-|$)|\d{4}\s*Q\d|Q\d|\d{1,2}\s*月|第.{1,3}(阶段|期|步|周|天)|Phase|阶段|\d{1,2}:\d{2}|Day\s*\d)",
                   re.I)
 TITLED = re.compile(r"^\s*(?:\*\*(.+?)\*\*|__(.+?)__)\s*[：:—\-–]?\s*(.*)$|^\s*([^：:？?]{2,16}[：:？?])\s*(.+)$")
@@ -169,8 +173,10 @@ def outline(blocks, fallback_title):
                     elif len(part) <= 60 and len(doc["subtitle"]) < 2 and not re.match(r"^(场景|受众|对象)[：:]", part):
                         doc["subtitle"].append(part)
             continue
-        if b["t"] == "h" and b["level"] == 3:
-            unit = {"title": unbold(b["text"]), "blocks": []}
+        if b["t"] == "h" and b["level"] == 3:  # 「（一）」「1.1」这类小节编号不上屏
+            unit = {"title": re.sub(r"^\s*([（(][一二三四五六七八九十]+[）)]|\d{1,2}(\.\d{1,2})+(?=\s|[\u4e00-\u9fff])"
+                                    r"(?!\s*[%％倍万亿千元个分吨])|[一二三四五六七八九十]+[、.])\s*", "",
+                                    unbold(b["text"])), "blocks": []}  # 「2.5 倍增长」这种数字开头的不动
             sec["units"].append(unit)
             continue
         if unit is None:
@@ -231,7 +237,7 @@ def list_body(b):
                 t, d = (head, tail) if tail and len(head) <= 14 else (rest, "")
             items.append({"time": time, "title": t, "text": d})
         return {"type": "timeline", "items": items}, "列表每项以时间/阶段开头 → 时间线"
-    if n <= 4 and all(num_of(unbold(x)) for x in raw) and all(len(unbold(x)) <= 40 for x in raw):
+    if not b["ordered"] and n <= 4 and all(num_of(unbold(x)) for x in raw) and all(len(unbold(x)) <= 40 for x in raw):
         items = []
         for (t, d), x in zip(pairs, raw):
             plain = unbold(x)
@@ -420,7 +426,7 @@ def unit_slides(unit):
             tb = table_body(m)
             bodies = table_cards(m) or (tb if isinstance(tb, list) else [tb])
         elif m["t"] == "quote":
-            bodies = [({"type": "quote", "text": unbold(m["text"])}, "引用 → 金句页")]
+            bodies = [({"type": "quote", "text": unbold(m["text"]).strip("“”\"「」『』")}, "引用 → 金句页")]  # 版式自带引号
         else:
             bodies = [({"type": "image", "path": m["path"], "title": unit["title"],
                         "text": "\n".join(unbold(b["text"]) for b in pre)[:200]}, "图片 → 图文页")]
@@ -436,11 +442,22 @@ def pick_pages(prof):
     roles = {}
     for s in prof["slides"]:
         roles.setdefault(s["role"], []).append(s)
-    content = sorted(roles.get("content", []), key=lambda s: -(s["area"][2] * s["area"][3] if s.get("area") else 0))
-    light = [s for s in content if not s["dark"]] or content
+
+    def area(s):
+        return s["area"][2] * s["area"][3] if s.get("area") else 0
+    content = sorted(roles.get("content", []), key=lambda s: -area(s))
+    if any(s.get("tracker") for s in content):  # 有进度标签的版式：每页都用它，导航保持一致（先于面积筛选）
+        content = [s for s in content if s.get("tracker")]
+    if content and area(content[0]):  # 带侧栏、带样机这类窄版式不参与轮换（需要时在 deck.json 里用 from 指定）
+        content = [s for s in content if area(s) >= 0.75 * area(content[0])]
+    light = [s for s in content if not s["dark"]]
     dark = [s for s in content if s["dark"]]
-    return {"cover": roles.get("cover", content[:1]), "toc": roles.get("toc", []), "section": roles.get("section", []),
-            "content": light, "content_dark": dark, "ending": roles.get("ending", [])}
+    main = dark if len(dark) > len(light) else (light or content)  # 深色为主的模板（发布会）就用深色页
+    sections = roles.get("section", [])
+    if any(not s.get("agenda") for s in sections):  # 普通章节页和议程式章节页都有：只用一种，别交替
+        sections = [s for s in sections if not s.get("agenda")]
+    return {"cover": roles.get("cover", content[:1]), "toc": roles.get("toc", []), "section": sections,
+            "content": main, "content_dark": dark, "quote": roles.get("quote", []), "ending": roles.get("ending", [])}
 
 
 def plan(src_path, prof_path, out):
@@ -471,8 +488,10 @@ def plan(src_path, prof_path, out):
     toc_secs = [s for s in secs if not re.match(r"^(附|附录|Appendix)", s["title"])]
     if pages["toc"] and len(toc_secs) >= 3:
         toc = pages["toc"][0]
-        cap = len(toc["slots"].get("items", []))
-        multi = toc["texts"] and any("\n" in t["text"] for t in toc["texts"] if t["key"] in toc["slots"].get("items", []))
+        paras = toc.get("toc_mode") == "paragraphs"  # 一个文本框一段一个议题：条数不受形状个数限制
+        cap = 8 if paras else len(toc["slots"].get("items", []))
+        multi = not paras and toc["texts"] and any("\n" in t["text"] for t in toc["texts"]
+                                                   if t["key"] in toc["slots"].get("items", []))
         items = [[s["title"], s["sub"] or s["kicker"]] if multi else s["title"] for s in toc_secs]
         if len(items) > cap:
             print(f"  （{len(items)} 个章节超过模板目录的 {cap} 个位置，没生成目录页：合并章节后手动加）")
@@ -484,17 +503,41 @@ def plan(src_path, prof_path, out):
         if pages["section"] and len(secs) >= 2 and not sec.get("implicit"):
             sx = pages["section"][si % len(pages["section"])]
             intro = next((b for u in sec["units"] if u.get("intro") for b in u["blocks"] if b["t"] == "para"), None)
-            s = {"from": sx["index"], "number": num, "title": sec["title"], "_why": "章节页"}
-            sub = sec["sub"] or sec["kicker"] or (unbold(intro["text"]) if intro and len(intro["text"]) <= 40 else "")
-            if sub:
-                s["subtitle"] = sub
-            slides.append(s)
+            if sx.get("agenda"):  # 议程式章节页：整张议程，高亮当前这一章
+                slides.append({"from": sx["index"], "items": [x["title"] for x in toc_secs],
+                               "current": toc_secs.index(sec) if sec in toc_secs else None,
+                               "_why": "章节页（模板用高亮当前议题的议程页做章节分隔）"})
+            else:
+                s = {"from": sx["index"], "number": num, "title": sec["title"], "_why": "章节页"}
+                sub = sec["sub"] or sec["kicker"] or (unbold(intro["text"]) if intro and len(intro["text"]) <= 40
+                                                      else "")
+                if sub:
+                    s["subtitle"] = sub
+                slides.append(s)
         for unit in sec["units"]:
             for k, (body, lead, conclusion, why, notes) in enumerate(unit_slides(unit)):
                 pool = pages["content_dark"] if body["type"] in ("quote", "statement") and pages["content_dark"] \
                     else pages["content"]
                 tp = pool[(len(slides)) % len(pool)] if body["type"] not in ("chart", "table", "cards") else pool[0]
+                if body["type"] == "quote" and pages["quote"]:  # 模板自带金句页：直接用它
+                    q = pages["quote"][len(slides) % len(pages["quote"])]
+                    # 署名在最后一个破折号后面，而且要短（「增长——不是目标」里的破折号是正文）
+                    mm = re.match(r"^(.+?)\s*(——|—|--)\s*([^，。,.!！?？—-]{1,20})$", body["text"])
+                    if not (mm and q["slots"].get("subtitle")):
+                        mm = None  # 模板没有署名位：整句放标题，不丢字
+                    s = {"from": q["index"], "title": mm.group(1).strip() if mm else body["text"],
+                         "_why": "引用 → 模板的金句页"}
+                    if mm:
+                        s["subtitle"] = "—— " + mm.group(3)
+                    if notes:
+                        s["notes"] = notes
+                    slides.append(s)
+                    continue
                 s = {"from": tp["index"], "title": unit["title"], "body": body, "_why": why}
+                if tp.get("tracker"):  # 进度标签：写章节名，高亮当前章
+                    s["tracker"] = {"items": [x["title"] for x in toc_secs],
+                                    "current": toc_secs.index(sec) if sec in toc_secs else None} \
+                        if len(toc_secs) >= 2 and not sec.get("implicit") else None
                 if tp["slots"].get("number"):
                     s["number"] = num
                 if body["type"] == "quote":  # 金句通常是一章的收尾：页面标题用章节名
@@ -509,6 +552,14 @@ def plan(src_path, prof_path, out):
                     body["path"] = os.path.relpath(os.path.join(os.path.dirname(os.path.abspath(md_path)),
                                                                 body["path"]), base)
                 slides.append(s)
+    trk = next((s.get("tracker") for s in slides if s.get("tracker")), None)
+    tp_trk = next((p.get("tracker") for p in pages["content"] if p.get("tracker")), None)
+    if trk and tp_trk:
+        cell = next((t for p in pages["content"] for t in p["texts"] if t["key"] == tp_trk["items"][0]), None)
+        cap = int((cell["box"][2] - 0.2) * 72 / max(6, cell["size"])) if cell else 6
+        long = [x for x in trk["items"] if len(x) > cap]
+        if long:
+            print(f"  （进度标签一格约放 {cap} 个字，这些章节名太长会被缩小：{long}。在 deck.json 的 tracker.items 里换成短名）")
     if pages["ending"]:
         slides.append({"from": pages["ending"][0]["index"], "_why": "结尾页（保留模板原文；要改就写 title）"})
     deck = {"template": os.path.relpath(profile_template(prof, prof_path), base), "profile": os.path.relpath(prof_path, base),

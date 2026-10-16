@@ -19,7 +19,7 @@ from PIL import Image, ImageDraw, ImageFont
 SANS = ["Microsoft YaHei", "微软雅黑", "PingFang SC", "Hiragino Sans GB", "Noto Sans CJK SC", "Noto Sans SC",
         "Source Han Sans CN", "Source Han Sans SC", "思源黑体 CN", "WenQuanYi Micro Hei", "Heiti SC"]
 SERIF = ["Source Han Serif SC", "Source Han Serif CN", "思源宋体", "Noto Serif CJK SC", "Noto Serif SC",
-         "Songti SC", "STSong", "SimSun", "宋体"]
+         "宋体-简", "Songti SC", "STSong", "SimSun", "宋体"]  # macOS 上 LibreOffice 只认「宋体-简」这个名字
 
 
 def installed_fonts():

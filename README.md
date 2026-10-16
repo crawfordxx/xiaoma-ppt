@@ -26,7 +26,26 @@ xiaoma-ppt 反过来：**版式从模板里找，颜色字体从模板里取，�
 **文旅 · 云栖文旅《云栖四季 · 2027 文旅推介》** —— 宣纸 + 水墨远山 + 青绿朱砂；内容页右下角有山，内容自动避开
 ![文旅](docs/gallery/tourism.jpg)
 
-每个例子目录里有：`content.md`（原始内容）→ `work/profile.md`（模板画像）→ `deck.json`（逐页规划）→ `out/deck.pptx`（成品，可在 PowerPoint / WPS / Keynote 里直接改）。图表都是原生图表，双击就能改数据。
+### 复杂模板
+
+上面 5 套模板每套只有 5–6 页、结构干净。真实企业模板要乱得多，下面 3 套照着真实模板的复杂情况做（同样是虚构品牌、代码生成，见 [`tools/complex_*.py`](tools)），内容分别用 Word、Markdown、txt 给出。
+
+**能源央企年度汇报 · 岳川能源**（13 页模板 + Word 内容）——全部用母版、版式和占位符搭成，页面上的标题占位符是空的；颜色字体全走主题引用；10 × 5.625 英寸的老尺寸；母版右下角有曲线装饰；内容页左侧有章节导航条（当前章节垫主题色）；深色页靠页面级配色映射反色；自带表格、图表、KPI 卡片、时间线等示例页
+![能源](docs/gallery/energy.jpg)
+
+**科技发布会 · 星曜科技**（13 页模板 + Markdown 内容）——Keynote 导出式结构，所有东西都在页面上、没有占位符；全幅星空大图、渐变文字、描边空心数字、半透明玻璃卡片、竖排「目录」、旋转 90° 的英文；内容页右侧有出血的手机样机；有「左侧标题面板、右侧放内容」的页；自带金句页
+![发布会](docs/gallery/keynote.jpg)
+
+**咨询研究报告 · 衡策咨询**（14 页模板 + GBK 编码的 txt 内容）——第一页是隐藏的「模板使用说明」；议程写在一个文本框里；章节页是「高亮当前议题的议程页」；内容页右上角有进度标签、底部有资料来源和页码；带 2×2 矩阵、瀑布图、哈维球表、甘特图、组织架构、箭头流程等示例页；有带右侧要点栏的版式；封底是免责声明
+![咨询](docs/gallery/consulting.jpg)
+
+这些模板拆出来的问题都修进了引擎：
+- 页面角色：隐藏页跳过，第一张没隐藏的页才是封面；免责声明封底认成结尾；模板自带的金句页直接拿来放引用；议程式章节页、左标题内容页都认得出。
+- 导航：进度标签 / 章节导航条每页写上章节名，当前章用模板的高亮样子，高亮标记跟着移；段落式议程沿用模板的编号格式。
+- 槽位：页码、页脚占位符不当槽位；位置继承自版式的占位符能正确调整；封面上的英文眉题（ANNUAL REPORT）不被当成副标题，章节页上的 CHAPTER ONE 跟着章节号变。
+- 颜色和版面：主色不被渐变遮罩带偏；背景上的柔光不当成插画避开；带侧栏、带样机的窄版式不参与自动轮换；深色为主的模板默认用深色内容页。
+
+每个例子目录里有：`content.md`（原始内容；复杂模板的 3 个例子是 `content.docx` / `content.md` / `content.txt`，转出来的 md 在 `work/content.converted.md`）→ `work/profile.md`（模板画像）→ `deck.json`（逐页规划）→ `out/deck.pptx`（成品，可在 PowerPoint / WPS / Keynote 里直接改）。图表都是原生图表，双击就能改数据。
 
 ## 它怎么做到的
 
@@ -96,6 +115,7 @@ python3 $E/render.py out/deck.pptx --out out/render           # 每页 JPG + 拼
 | `SKILL.md` | 入口：5 步工作流、7 条硬规矩、交付清单 |
 | `engine/inspect_template.py` | 拆模板 → `profile.json` / `profile.md` / 模板缩略图 |
 | `engine/convert.py` | txt / docx / doc / rtf / odt / wps / html / pdf → md |
+| `engine/nav.py` | 进度标签、章节导航条、段落式目录、议程式章节页的识别和填写 |
 | `engine/plan.py` | md + 模板画像 → 草稿 `deck.json`（每页附选择理由） |
 | `engine/build.py` | 复制模板页、填槽位、画版式、写备注 → `.pptx` |
 | `engine/recipes.py` `draw.py` | 13 种版式：卡片、要点、大数字、流程、时间线、对比、图表、表格、金句、观点、正文、图文、分栏 |
@@ -103,7 +123,7 @@ python3 $E/render.py out/deck.pptx --out out/render           # 每页 JPG + 拼
 | `engine/render.py` | pptx → 每页 JPG + 拼图（缺字体时只在预览副本里替换） |
 | `engine/icons/` | 167 个线性图标（Lucide，ISC 协议），构建时按模板主色着色 |
 | `references/` | 匹配规则、审美标准与目视打分表、deck.json 字段、常见问题 |
-| `examples/` | 5 套行业模板 + 5 份示例的完整过程文件 + GLM 5.3 跨模型测试（md 输入、Word 输入各一轮） |
+| `examples/` | 5 套行业模板 + 3 套复杂模板，8 份示例的完整过程文件 + GLM 5.3 跨模型测试 |
 | `tests/` | 回归测试（`python3 -m pytest tests -q`，不需要 LibreOffice） |
 
 ## 跨模型测试
@@ -120,6 +140,10 @@ python3 $E/render.py out/deck.pptx --out out/render           # 每页 JPG + 拼
 
 ![GLM 5.3 用 Word 输入的产出](docs/gallery/cross-model-glm-5.3-word.jpg)
 
+**第三轮：复杂模板。** 模板换成上面的能源央企模板（占位符、主题色、章节导航条、10 × 5.625 英寸），内容是一份没用标题样式的《安全生产工作总结》Word。它 8 分 42 秒做完 14 页，导航条每页都换成了短章节名、高亮跟着章节走，数字全部和原文一致。验收发现矮版面上对比框溢出，已经修进引擎，并加了 lint 检查。见 [`examples/cross-model-glm-5.3-complex`](examples/cross-model-glm-5.3-complex/TEST_REPORT.md)：
+
+![GLM 5.3 + 复杂模板](docs/gallery/cross-model-glm-5.3-complex.jpg)
+
 ## License
 
-MIT，可免费商用。示例模板里的品牌（睿信资本、康宁医疗、启明教育、华铸智造、云栖文旅）都是虚构的，模板由代码生成，同样可以随意使用；示例数据均为虚构。图标来自 [Lucide](https://lucide.dev)（ISC）。
+MIT，可免费商用。示例模板里的品牌（睿信资本、康宁医疗、启明教育、华铸智造、云栖文旅、岳川能源、星曜科技、衡策咨询）都是虚构的，模板由代码生成，同样可以随意使用；示例数据均为虚构。图标来自 [Lucide](https://lucide.dev)（ISC）。

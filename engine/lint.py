@@ -5,7 +5,7 @@
   ❌ 文字溢出（按字号估算行数，超出文本框）      ❌ 形状出界（新画的内容超出页面）
   ❌ 文字互相压住（新文字之间、新文字压模板文字）  ❌ 模板示例字残留（XXXX / 标题 / 请输入…，或标题槽没改）
   ❌ 字号小于 10pt                               ❌ 文字和背景对比度 < 3（需要渲染，按真实像素算）
-  ❌ 内容页空着                                  ⚠️ 单页字数过多 / 使用了模板以外的字体 / 构建时的提示
+  ❌ 内容页空着 / 新内容超出内容区下沿          ⚠️ 单页字数过多 / 使用了模板以外的字体 / 构建时的提示
   （对比度：模板自带的文字原样保留了模板颜色时只给 ⚠️，不要为了过检改模板的颜色）
 有 ❌ 时退出码为 1。
 """
@@ -19,6 +19,7 @@ from pptx import Presentation
 from pptx.oxml.ns import qn
 
 from build import SAMPLE_RE
+from inspect_template import ph_size
 from common import profile_template, contrast, count_lines, inch, iter_shapes, load_json, overlap, save_json, text_em, text_insets, \
     to_hex, wrap_none
 
@@ -120,12 +121,16 @@ def lint(path, do_render=True):
         tpl_texts = {t["text"] for t in ps["texts"]} if ps else set()
         new_text, old_text, chars = [], [], 0
         new_count = 0
+        spill = 0.0  # 新内容超出内容区下沿多少
         for s, box, nested in iter_shapes(slide.shapes):
             is_new = s.name.startswith("xm ") if rep else s.shape_id not in tpl_ids
             new_count += is_new
             if is_new and s.shape_type != 6 and (box[0] < -0.02 or box[1] < -0.02 or box[0] + box[2] > W + 0.02
                                                  or box[1] + box[3] > H + 0.02):
                 add(page, "error", f"形状出界：{s.name} 位置 {tuple(round(v, 2) for v in box)}")
+            ar = info.get("area")
+            if is_new and ar and s.shape_type != 6 and box[1] + box[3] > ar[1] + ar[3] + 0.15:
+                spill = max(spill, box[1] + box[3] - ar[1] - ar[3])
             if is_new and getattr(s, "has_table", False) and s.has_table:
                 rows = len(s.table.rows)
                 min_h = rows * 0.3
@@ -136,11 +141,11 @@ def lint(path, do_render=True):
             txt = s.text_frame.text.strip()
             chars += len(txt)
             sizes, colors, fonts = runs_info(s)
-            size = max(sizes) if sizes else 18
+            size = max(sizes) if sizes else (ph_size(s, slide) if s.is_placeholder else 18)  # 占位符的字号继承版式 / 母版
             short = txt.replace("\n", " ")[:20]
             if is_new and sizes and min(sizes) < 10:
                 add(page, "error", f"字号 {min(sizes)}pt 太小：「{short}」")
-            bad, why = overflow(s, box, size)
+            bad, why = overflow(s, box, size) if box[2] > 0 and box[3] > 0 else (False, "")  # 位置继承母版的占位符
             if bad:
                 add(page, "error", f"文字溢出：「{short}」{why}")
             if not is_new and txt in tpl_texts and SAMPLE_RE.search(txt) and not txt.strip().isdigit():
@@ -156,6 +161,8 @@ def lint(path, do_render=True):
                 elif r and r[0] < 3.0:
                     add(page, "error", f"对比度 {r[0]:.1f}（文字 #{colors[0]} / 背景 #{r[1]}）看不清：「{short}」")
             (new_text if is_new else old_text).append((s, box, short))
+        if spill:
+            add(page, "error", f"新内容超出内容区下沿 {spill:.2f} 英寸（压到了模板的页脚或装饰）：删减内容或拆页")
         if ps and ps["role"] == "content" and new_count == 0:
             add(page, "error", "内容页没有任何内容（缺 body）")
         if ps and ps["slots"].get("title") and ps["role"] in ("cover", "section", "content"):

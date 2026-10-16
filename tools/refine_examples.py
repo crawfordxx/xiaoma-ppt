@@ -65,7 +65,48 @@ def tourism(s):
     s["客源结构"].update(lead="长三角游客占比 27%，是增长最快的客源地", source="示例数据")
 
 
+def short_tracker(ex, names):
+    """进度标签格子很窄：换成短章节名"""
+    p = os.path.join(ROOT, ex, "deck.json")
+    d = json.load(open(p, encoding="utf-8"))
+    for sl in d["slides"]:
+        if sl.get("tracker"):
+            sl["tracker"]["items"] = names
+    json.dump(d, open(p, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+
+
+def energy(s):
+    s["核心指标"]["source"] = "示例数据"
+    for it in s["核心指标"]["body"]["items"]:
+        if it["value"] == "2,860":
+            it.update(unit="亿千瓦时", text="")
+    s["季度发电量（亿千瓦时）"]["source"] = "示例数据 · 单位：亿千瓦时"
+    s["三个短板"]["body"] = {"type": "cards", "items": [
+        {"title": "消纳", "text": "西北地区弃风弃光率仍有 4.1%", "icon": "triangle-alert"},
+        {"title": "调节", "text": "储能配置比例偏低，仅为 8%", "icon": "gauge"},
+        {"title": "数字化", "text": "场站数据孤岛，平均每站 5 套系统", "icon": "database"}]}
+    s["三个短板"]["_why"] = "三个问题各有一句说明 → 卡片（草稿选成了大数字，会丢掉说明）"
+
+
+def keynote(s):
+    p = s["各场景识别准确率（%）"]
+    p["body"]["highlight"] = 0
+    p["source"] = "示例数据"
+
+
+def consulting(s):
+    src = "资料来源：示例数据；衡策咨询分析"
+    for t, sl in s.items():
+        if sl["body"]["type"] in ("chart", "stats", "cards", "compare"):
+            sl["source"] = src
+    s["装机三年增长 6 倍，规模持续扩大"]["body"]["highlight"] = 3
+
+
 if __name__ == "__main__":
+    short_tracker("energy", ["形势分析", "主要成效", "存在问题", "工作计划"])
+    for fn in (energy, keynote, consulting):
+        edit(fn.__name__, fn)
+        print("refined", fn.__name__)
     for fn in (finance, medical, education, manufacturing, tourism):
         edit(fn.__name__, fn)
         print("refined", fn.__name__)

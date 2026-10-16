@@ -16,13 +16,20 @@ from pptx import Presentation
 from pptx.enum.shapes import PP_PLACEHOLDER
 from pptx.oxml.ns import qn
 
+import nav
 from common import (first_size, hls, inch, is_saturated, iter_shapes, luminance, max_size, mix, norm_hex, save_json, shape_text, to_hex, wrap_none, hue_dist)
 
 TOC_RE = re.compile(r"^\s*(目\s*录|contents?|agenda|议\s*程|catalog|目\s*录\s*/?\s*contents?)\s*$", re.I | re.M)
 END_RE = re.compile(r"谢\s*谢|感\s*谢|THANKS?|Thanks?|Thank you|THANK YOU|再\s*见|Q\s*&\s*A|敬请|期待.*合作")
 NUM_RE = re.compile(r"(PART|Part|CHAPTER|Chapter|SECTION|第)?\s*0?\d{1,2}\s*(章|部分|节)?\s*[.、]?")
-DATE_RE = re.compile(r"(19|20)\d{2}\s*[年./\-]|\d{1,2}\s*月|汇报人|演讲人|主讲|日期|DATE", re.I)
+DATE_RE = re.compile(r"(19|20)[\dXx]{2}\s*[年./\-]|\d{1,2}\s*月|汇报人|演讲人|主讲|日期|DATE", re.I)
 TITLE_TYPES = (PP_PLACEHOLDER.TITLE, PP_PLACEHOLDER.CENTER_TITLE)
+FOOTER_TYPES = (PP_PLACEHOLDER.FOOTER, PP_PLACEHOLDER.SLIDE_NUMBER, PP_PLACEHOLDER.DATE)
+DISCLAIMER_RE = re.compile(r"免责|版权所有|未经.{0,12}许可|不得.{0,8}(披露|转载|复制)|disclaimer|copyright|©|all rights reserved",
+                           re.I)
+QUOTE_MARK = re.compile(r"\s*[“”\"「」『』❝❞]\s*")
+CAPS = re.compile(r"[A-Z0-9][A-Z0-9 &·.,'’\-/|]{3,}")  # 全大写英文小字：装饰性的 kicker，不当副标题
+ATTRIB = re.compile(r"^\s*(——|—|--|–)")
 
 
 # ---------- 主题 ----------
@@ -114,7 +121,9 @@ def collect_style(prs, theme_colors, fonts):
                 ext = sp.find(".//" + qn("a:ext"))
                 if ext is not None and ext.get("cx"):
                     area = int(ext.get("cx")) * int(ext.get("cy")) / (prs.slide_width * prs.slide_height)
-            fill[norm_hex(v)] += w * (1 + 20 * min(area, 0.6))
+            # 渐变遮罩、半透明叠色只是氛围，不代表品牌色
+            soft = clr.find(qn("a:alpha")) is not None or any(a.tag == qn("a:gradFill") for a in clr.iterancestors())
+            fill[norm_hex(v)] += w * (1 + 20 * min(area, 0.6)) * (0.15 if soft else 1)
         for r in el.iter(qn("a:rPr"), qn("a:defRPr")):
             if _skip(r):
                 continue
@@ -211,22 +220,28 @@ def info(shape, box, slide, nested):
     }
 
 
-def classify(i, n, texts, W, H):
+def classify(i, first, last, texts, W, H):
+    """first / last：第一张和最后一张没隐藏的页（隐藏的「使用说明」页不算）"""
     all_text = "\n".join(t["text"] for t in texts)
     nums = [t for t in texts if is_number(t["text"])]
-    if TOC_RE.search(all_text) or (i <= 2 and len(nums) >= 3):
+    if TOC_RE.search(all_text) or (i - first <= 2 and len(nums) >= 3):
         return "toc"
-    if i >= n - 2 and i > 0 and END_RE.search(all_text):
+    if i >= last - 1 and i > first and END_RE.search(all_text):
         return "ending"
-    if i == n - 1 and n >= 4 and sum(len(t["text"]) for t in texts) < 40:  # 只有 logo/口号的结尾页
-        return "ending"
-    if i == 0:
+    disclaimer = any(DISCLAIMER_RE.search(t["text"]) and t["size"] <= 12 for t in texts)  # 免责声明都是小字
+    if i == last and last - first >= 3 and (sum(len(t["text"]) for t in texts) < 40 or disclaimer):
+        return "ending"  # 只有 logo / 口号，或者是免责声明的封底
+    if i == first:
         return "cover"
     titles = [t for t in texts if not is_number(t["text"])]
+    big = max(titles, key=lambda t: t["size"], default=None)
+    big_txt = max((t for t in titles if t["text"].strip()), key=lambda t: t["size"], default=None)
+    if any(QUOTE_MARK.fullmatch(t["text"]) for t in texts if t["text"]) or \
+            (big_txt and big_txt["size"] >= 28 and big_txt["text"].lstrip().startswith(("“", "「", "『", '"'))):
+        return "quote"
     if any(t["placeholder"] in ("TITLE", "CENTER_TITLE") for t in texts) and \
             any(t["placeholder"] == "TITLE" and t["box"][1] < H * 0.3 for t in texts):
         return "content"
-    big = max(titles, key=lambda t: t["size"], default=None)
     has_num = any(is_number(t["text"]) for t in texts)
     chars = sum(len(t["text"]) for t in texts)
     if big and big["box"][1] < H * 0.22 and big["size"] < 34:
@@ -256,25 +271,44 @@ def assign_slots(role, texts, W, H):
         subs = []
         for it in items:  # 条目正下方、字号更小的文字 = 条目副标题
             b = it["box"]
-            cand = [t for t in others if t["size"] < it["size"] and 0 <= t["box"][1] - (b[1] + b[3]) < 0.6
+            cand = [t for t in others if t["size"] < it["size"] and -0.15 <= t["box"][1] - (b[1] + b[3]) < 0.6
                     and abs(t["box"][0] - b[0]) < 0.3]
             subs.append(cand[0] if cand else None)
         if any(subs):
             slots["item_subs"] = [t["key"] if t else None for t in subs]
             others = [t for t in others if t not in subs]
+        if len(items) <= 1:  # 一个文本框里写了好几段议题
+            multi = next((t for t in rest if nav.para_items(t)), None)
+            if multi:
+                items, others = [multi], [t for t in rest if t is not multi]
+                slots.pop("item_subs", None)
         heads += others
         slots["heading"] = [t["key"] for t in heads]
         slots["items"] = [t["key"] for t in items]
         slots["numbers"] = [t["key"] for t in reading_order(nums)]
+    elif role == "quote":
+        marks = [t for t in words if QUOTE_MARK.fullmatch(t["text"])]
+        body = [t for t in by_size if t not in marks]
+        if body:
+            slots["title"] = body[0]["key"]
+        slots["subtitle"] = [t["key"] for t in body[1:] if ATTRIB.match(t["text"])]
     elif role in ("cover", "ending", "section"):
         main = title_ph[0] if title_ph else (by_size[0] if by_size else None)
         if main:
             slots["title"] = main["key"]
         rest = [t for t in by_size if t is not main]
+        from build import SAMPLE_RE
+        deco = [t for t in rest if CAPS.fullmatch(t["text"].strip()) and main and t["size"] < main["size"]
+                and not SAMPLE_RE.search(t["text"]) and not DATE_RE.search(t["text"])
+                and not re.search(r"\d{4}[.\-/]\d{1,2}|(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)\w*\s+\d",
+                                  t["text"], re.I)]
+        rest = [t for t in rest if t not in deco]
         dates = [t for t in rest if DATE_RE.search(t["text"])]
         slots["subtitle"] = [t["key"] for t in rest if t not in dates]
         if dates:
             slots["meta"] = [t["key"] for t in dates]
+        if deco:
+            slots["kicker"] = [t["key"] for t in deco]
         if nums:
             slots["number"] = nums[0]["key"]
     else:
@@ -283,12 +317,14 @@ def assign_slots(role, texts, W, H):
                                                          if top else None)
         if main:
             slots["title"] = main["key"]
-        hn = [t for t in nums if t["box"][1] < H * 0.3]
+        mb = main["box"][1] + main["box"][3] if main else H * 0.3
+        hn = [t for t in nums if t["box"][1] + t["box"][3] <= mb + 0.1]  # 序号要在标题这一带，不是正文里的「1」
         if hn:
             slots["number"] = hn[0]["key"]
-        if main:
-            mb = main["box"][1] + main["box"][3]
-            slots["kicker"] = [t["key"] for t in top if t is not main and t["box"][1] < mb + 0.3]
+        if main:  # 标题旁边的小字（英文眉题、单位行）；正文占位符、大文本框不算
+            slots["kicker"] = [t["key"] for t in top if t is not main and t["box"][1] < mb + 0.3
+                               and t["box"][3] < H * 0.15 and t["placeholder"] not in ("BODY", "OBJECT", "PICTURE")
+                               and abs(t["box"][0] - main["box"][0]) < 1.0]  # 和标题左对齐，不是图里的坐标轴标签
     return slots
 
 
@@ -306,8 +342,8 @@ def header_footer(slide_shapes, slots, W, H, layout_boxes):
     else:
         cut = H * 0.18
     foot = H - 0.4
-    for b in [s["box"] for s in slide_shapes] + layout_boxes:
-        if b[1] > H * 0.84 and b[3] < H * 0.16 and b[2] < W * 0.98:
+    for b, lim in [(s["box"], 0.88) for s in slide_shapes] + [(b, 0.84) for b in layout_boxes]:
+        if b[1] > H * lim and b[3] < H * 0.16 and b[2] < W * 0.98:  # 页面上的形状要更贴底边才算页脚
             foot = min(foot, b[1] - 0.12)
     return cut + 0.25, foot
 
@@ -386,16 +422,40 @@ def busy_boxes(img_path, W, H, region, step=0.1):
         return sum(abs(p[k] - q[k]) for k in range(3))
 
     px = small.load()
-    busy = set()
-    for r in range(rows):
-        for c in range(cols):
-            v = cp[c, r]
-            if px[c, r] > 64 or min(dist(v, rmed[r]), dist(v, cmed[c])) > 30:
-                busy.add((c, r))
+    fine = edges.resize((cols, rows), Image.BOX).load()
+    busy = {(c, r) for r in range(rows) for c in range(cols) if px[c, r] > 64}
+    diff = {(c, r) for r in range(rows) for c in range(cols)
+            if (c, r) not in busy and min(dist(cp[c, r], rmed[r]), dist(cp[c, r], cmed[c])) > 30}
+    busy |= solid_regions(diff, fine, cols, rows)
     grown = {(c + dc, r + dr) for c, r in busy for dc in (-1, 0, 1) for dr in (-1, 0, 1)}
     x0, y0, x1, y1 = region
     return [(c * step, r * step, step, step) for c, r in grown
             if 0 <= c < cols and 0 <= r < rows and x0 <= c * step < x1 and y0 <= r * step < y1]
+
+
+def solid_regions(diff, fine, cols, rows):
+    """和底色差得多的连片格子里，挑出「边界清楚」的：山体、色块插画的轮廓是一条清楚的线；
+    背景上的柔光、光晕边界发虚，不算占用（否则深色科技风模板的内容区会被砍掉一大块）"""
+    out, seen = set(), set()
+    for start in diff:
+        if start in seen:
+            continue
+        comp, stack = [], [start]
+        seen.add(start)
+        while stack:
+            c, r = stack.pop()
+            comp.append((c, r))
+            for nb in ((c + 1, r), (c - 1, r), (c, r + 1), (c, r - 1)):
+                if nb in diff and nb not in seen:
+                    seen.add(nb)
+                    stack.append(nb)
+        # 区域的边界（页面边缘不算：渲染图的四边本身就有一圈假边缘）
+        border = [(c, r) for c, r in comp if 0 < c < cols - 1 and 0 < r < rows - 1
+                  and any(nb not in diff for nb in ((c + 1, r), (c - 1, r), (c, r + 1), (c, r - 1)))]
+        sharp = sum(1 for c, r in border if fine[c, r] > 10)
+        if len(comp) <= 4 or (border and sharp >= 0.25 * len(border)):
+            out.update(comp)
+    return out
 
 
 def sample_bg(img_path, W, H, rect):
@@ -417,6 +477,88 @@ def strip_samples(prs, plan):
                     s._element.getparent().remove(s._element)
 
 
+def is_footer(s):
+    """页脚、页码、日期占位符，以及含页码域的文本框：模板自己维护，不当槽位"""
+    if s.is_placeholder:
+        try:
+            if s.placeholder_format.type in FOOTER_TYPES:
+                return True
+        except ValueError:
+            pass
+    return s._element.find(".//" + qn("a:fld")) is not None
+
+
+def toc_mode(entry, texts, shapes):
+    """目录是「一个文本框多段」还是「每条一个形状」，以及有没有高亮当前项（议程式章节页）"""
+    items = entry["slots"].get("items", [])
+    by_key = {t["key"]: t for t in texts}
+    pi = nav.para_items(by_key[items[0]]) if len(items) == 1 and items[0] in by_key else None
+    if pi:
+        entry["toc_mode"] = "paragraphs"
+        entry["toc_current"] = pi["current"]
+        entry["toc_mark"] = nav.para_mark(by_key[items[0]], shapes, pi["current"])
+    elif len(items) >= 3:
+        entry["toc_current"] = nav.highlight([nav.rpr_sig(nav.first_rpr(by_key[k]["shape"]._element))
+                                              for k in items if k in by_key])
+
+
+def refine_roles(entries, W, H):
+    """看全局再改角色：
+    - 有带序号的章节页时，没序号、标题在左半边的「章节页」其实是「左标题、右内容」的内容页
+    - 有两张以上目录页时，高亮了某一项的那几张是议程式章节页"""
+    secs = [e for e in entries if e["role"] == "section"]
+    if any(e["slots"].get("number") for e in secs):
+        for e in secs:
+            title = next((t for t in e["texts"] if t["key"] == e["slots"].get("title")), None)
+            if not e["slots"].get("number") and title and title["box"][0] + title["box"][2] < W * 0.55 \
+                    and title["box"][1] > H * 0.25:
+                e["role"], e["side_title"] = "content", True
+    tocs = [e for e in entries if e["role"] == "toc"]
+    lit = [e for e in tocs if e.get("toc_current") is not None]
+    # 有一张没高亮的总目录，或者几张目录高亮的位置不同，才说明高亮是在标「当前章」
+    if len(tocs) >= 2 and lit and (len(lit) < len(tocs) or len({e["toc_current"] for e in lit}) > 1):
+        for e in lit:
+            e["role"], e["agenda"] = "section", True
+
+
+def is_backdrop(d, W, H):
+    """整页的背景图、底色块（不是图表和表格：示例图表常常也占大半页）"""
+    a = d["box"][2] * d["box"][3]
+    return a > W * H * 0.8 or (a > W * H * 0.6 and d["shape"].shape_type in (1, 13))
+
+
+def content_region(slide, shapes, entry, W, H):
+    """内容页：版面区域、要删的示例内容、被占用的地方"""
+    slots = entry["slots"]
+    lb = layout_boxes(slide, W, H)
+    trk = entry.get("tracker") or {}
+    keep = set(trk.get("items", [])) | {trk.get("mark")}
+    samples = []
+    if entry.get("side_title"):  # 标题在左侧面板里：整页去掉占用的地方，剩下的就是内容区
+        foot = header_footer(shapes, {}, W, H, lb)[1]
+        region = (0.45, 0.45, W - 0.45, foot)
+    else:
+        top, foot = header_footer(shapes, slots, W, H, lb)
+        left = min([shapes_by(shapes, slots.get("title"))["box"][0]] if slots.get("title") else [0.6])
+        left = max(0.45, min(left, 1.2))
+        region = (left, top, W - left, foot)
+        for d in shapes:
+            if d["nested"] or d["key"] in keep:
+                continue
+            b = d["box"]
+            if is_backdrop(d, W, H):
+                continue
+            empty_ph = d["shape"].is_placeholder and not d["text"] and d["key"] != slots.get("title") \
+                and not is_footer(d["shape"])
+            inside = empty_ph or b[1] >= top - 0.3 and b[1] + b[3] <= foot + 0.3 and (b[0] >= left - 0.8 or b[0] + b[2] / 2 >= left)
+            edge_pic = d["shape"].shape_type == 13 and (b[0] < 0.1 or b[0] + b[2] > W - 0.1 or b[1] + b[3] > H - 0.1)
+            if inside and not edge_pic and not is_footer(d["shape"]) and \
+                    d["key"] not in (slots.get("title"), slots.get("number")):
+                samples.append(d["key"])
+    occ = lb + [d["box"] for d in shapes if not d["nested"] and d["key"] not in samples and not is_backdrop(d, W, H)]
+    return {"region": [round(v, 2) for v in region], "samples": samples, "_occ": occ}
+
+
 def analyze(path, out, do_render=True):
     prs = Presentation(path)
     W, H = inch(prs.slide_width), inch(prs.slide_height)
@@ -431,37 +573,35 @@ def analyze(path, out, do_render=True):
     from build import SAMPLE_RE
     brand = {t for t, c in seen.items() if c >= 3 and len(t) <= 30 and not NUM_RE.fullmatch(t.strip())
              and not SAMPLE_RE.search(t)}
-    for i, slide in enumerate(prs.slides):
+    hidden = [sl._element.get("show") == "0" for sl in prs.slides]
+    visible = [i for i in range(n) if not hidden[i]] or [0]
+    first, last = visible[0], visible[-1]
+    pages = []
+    for i, slide in enumerate(prs.slides):  # 第一遍：每页的角色和槽位
         shapes, texts = [], []
         for s, b, nested in iter_shapes(slide.shapes):
             d = info(s, b, slide, nested)
             shapes.append(d)
-            if s.has_text_frame and (d["text"] or s.is_placeholder):
+            if s.has_text_frame and (d["text"] or s.is_placeholder) and not is_footer(s):
                 texts.append(d)
-        role = classify(i, n, texts, W, H)
-        slots = assign_slots(role, [t for t in texts if t["text"] not in brand], W, H)
-        lb = layout_boxes(slide, W, H)
-        entry = {"index": i, "role": role, "layout": slide.slide_layout.name, "slots": slots,
+        role = "hidden" if hidden[i] else classify(i, first, last, texts, W, H)
+        ids = collections.Counter(d["key"] for d in shapes)
+        entry = {"index": i, "role": role, "layout": slide.slide_layout.name,
                  "texts": [{k: v for k, v in t.items() if k != "shape"} for t in texts]}
-        if role == "content":
-            top, foot = header_footer(shapes, slots, W, H, lb)
-            left = min([shapes_by(shapes, slots.get("title"))["box"][0]] if slots.get("title") else [0.6])
-            left = max(0.45, min(left, 1.2))
-            region = (left, top, W - left, foot)
-            samples = []
-            for d in shapes:
-                if d["nested"]:
-                    continue
-                b = d["box"]
-                if b[2] * b[3] > W * H * 0.6:
-                    continue
-                inside = b[1] >= top - 0.3 and b[1] + b[3] <= foot + 0.3
-                edge_pic = d["shape"].shape_type == 13 and (b[0] < 0.1 or b[0] + b[2] > W - 0.1)
-                if inside and not edge_pic and d["key"] not in (slots.get("title"), slots.get("number")):
-                    samples.append(d["key"])
-            occ = lb + [d["box"] for d in shapes if not d["nested"] and d["key"] not in samples
-                        and d["box"][2] * d["box"][3] < W * H * 0.6]
-            entry.update(region=[round(v, 2) for v in region], samples=samples, _occ=occ)
+        if any(c > 1 for c in ids.values()):
+            entry["dup_ids"] = sorted(k for k, c in ids.items() if c > 1)
+        trk = nav.detect_tracker(texts, shapes, W, H) if role == "content" else None
+        if trk:
+            entry["tracker"] = trk
+            texts = [t for t in texts if t["key"] not in trk["items"]]
+        entry["slots"] = assign_slots(role, [t for t in texts if t["text"] not in brand], W, H)
+        if role == "toc":
+            toc_mode(entry, texts, shapes)
+        pages.append((slide, shapes, texts, entry))
+    refine_roles([e for *_, e in pages], W, H)
+    for slide, shapes, texts, entry in pages:  # 第二遍：内容页的安全区和示例内容
+        if entry["role"] == "content":
+            entry.update(content_region(slide, shapes, entry, W, H))
         slides.append(entry)
 
     files = []
@@ -537,7 +677,7 @@ def write_md(prof, path):
     for s in prof["slides"]:
         by_role[s["role"]].append(s["index"])
     L += ["## 角色总览（deck.json 的 from 填这里的页码，从 0 开始）", ""]
-    for r in ("cover", "toc", "section", "content", "ending", "other"):
+    for r in ("cover", "toc", "section", "content", "quote", "ending", "hidden", "other"):
         if by_role.get(r):
             L.append(f"- **{r}**：{by_role[r]}")
     L.append("")
@@ -549,6 +689,24 @@ def write_md(prof, path):
         if s.get("area"):
             a = s["area"]
             L.append(f"- 内容安全区 area = [{a[0]}, {a[1]}, {a[2]}, {a[3]}]（x, y, 宽, 高，英寸）")
+        if s["role"] == "hidden":
+            L.append("- 隐藏页（模板使用说明之类），不用来做内容")
+        if s["role"] == "quote":
+            L.append("- 模板自带的金句页：`title` 写金句，`subtitle` 写「—— 出处」")
+        if s.get("agenda"):
+            L.append(f"- 议程式章节页：写 `items`（全部章节名）+ `current`（当前章，从 0 开始），"
+                     f"模板高亮第 {s['toc_current']} 项的样子会移到 current")
+        elif s.get("toc_mode") == "paragraphs":
+            L.append("- 目录是一个文本框里一段一个议题：`items` 写章节名，编号格式沿用模板")
+        if s.get("dup_ids"):
+            L.append(f"- ⚠️ 这一页有重复的形状 id {s['dup_ids']}：按 `#id` 引用时可能找错形状，最好在 PowerPoint 里另存一次让它重新编号")
+        if s.get("tracker"):
+            t = s["tracker"]
+            L.append(f"- 进度标签（{'一排' if t['axis'] == 'row' else '一列'}，{len(t['items'])} 格 {t['items']}，模板高亮第 {t['current']} 格"
+                     f"{'，标记 ' + t['mark'] if t.get('mark') else ''}）：写 `tracker: {{items: [短章节名], current: 当前章}}`；"
+                     "没有章节就写 `tracker: null` 删掉")
+        if s.get("side_title"):
+            L.append("- 标题在左侧面板里，内容放右边（area 已算好）")
         if s.get("samples"):
             L.append(f"- 构建时自动删除的示例内容：{', '.join(s['samples'])}")
         if s.get("warning"):

@@ -27,7 +27,8 @@ pip install python-pptx python-docx pillow lxml   # Python 3.9+
    python3 $E/inspect_template.py 模板.pptx --out work/
    ```
    读 `work/profile.md`：每页的角色、槽位（`#形状id`）、内容安全区 `area`、主色辅色字体。能读图就打开 `work/template-render/sheet-1.jpg` 对照着看。
-   **核对两件事**：①角色分对了没有（封面/目录/章节/内容/结尾）；②主色是不是模板的品牌色。不对就在 deck.json 里用 `from` 指定页、用 `tokens` 改色（见 `references/deck-spec.md`）。
+   **核对两件事**：①角色分对了没有（封面/目录/章节/内容/金句/结尾，隐藏页标 hidden 不用）；②主色是不是模板的品牌色。不对就在 deck.json 里用 `from` 指定页、用 `tokens` 改色（见 `references/deck-spec.md`）。
+   真实企业模板常见的复杂结构，profile.md 会逐页标出来：隐藏的使用说明页、议程式章节页（高亮当前议题的目录）、一个文本框多段的目录、内容页的进度标签 / 章节导航条、模板自带的金句页、标题在左侧面板的内容页。每种怎么写见 `references/deck-spec.md` 的「复杂模板里的特殊页」。
 
 2. **出草稿**
    ```bash
@@ -41,6 +42,7 @@ pip install python-pptx python-docx pillow lxml   # Python 3.9+
    - 版式选得对不对？数字多就用 `stats`/`chart`，先后顺序用 `process`/`timeline`，好坏对照用 `compare`。草稿选错了就改 `body.type`。
    - 字数：上屏的字**只能从原文里删减、拆分，不能改写、扩写、编数据**；删掉的完整原文放进 `notes`（演讲者备注）。每页的字数上限见 `references/aesthetics.md`。
    - 目录条数要和章节数对上；模板目录位置不够就合并章节，或者不放目录。
+   - 有进度标签的模板：每个内容页的 `tracker.items` 用 4–6 个字的短章节名，`current` 对上当前章。
    - 封面/结尾：模板原有的品牌名、口号会自动保留；要改就显式写 `title`/`subtitle`。
 
 4. **生成**
@@ -64,7 +66,7 @@ pip install python-pptx python-docx pillow lxml   # Python 3.9+
 3. **只在内容安全区里画。** `area` 是避开了标题、logo、页脚和背景插画的区域；要手动改 `area`，先看渲染图确认没压到东西。
 4. **一页一个重点。** 每页最多一个主版式（`split` 左右各一个）。内容多就拆页，不缩字硬塞。
 5. **数字要能被看见。** 关键数字用 `stats` 或图表，不埋在句子里；图表一律用原生图表（可在 PowerPoint 里改数据），不贴图片。
-6. **原文不改写。** 上屏的字从原文里删减、拆分得来；数据只能用原文里有的，查不到出处的数字不写。
+6. **原文不改写。** 上屏的字（包括页面标题）从原文里删减、拆分得来，不把小标题改写成自己总结的结论句；数据只能用原文里有的，查不到出处的数字不写。
 7. **lint 全绿才交付。** 示例字（「标题」「XXXX」「请输入」）一个都不能留。
 
 ## 什么时候读哪份参考

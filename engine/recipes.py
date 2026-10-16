@@ -132,18 +132,34 @@ def cards(slide, T, a, d):
 def stats(slide, T, a, d):
     items = [norm(i) for i in d["items"]]
     x, y, w, h = a
+    # 版面窄（小尺寸模板、带导航栏）：排成两行两列——前提是半高放得下最小字号的一整块（数字 + 标题 + 说明）
+    half_need = 20 / 72 * 1.25 + 0.85 + max([text_height(i["text"], w / 2 - 0.45, 14, 1.2) + 0.1 if i.get("text")
+                                             else 0 for i in items] + [0])
+    if len(items) == 4 and w / 4 < 2.1 and h / 2 >= half_need:
+        stats(slide, T, (x, y, w, h / 2), {**d, "items": items[:2], "note": None})
+        stats(slide, T, (x, y + h / 2, w, h / 2), {**d, "items": items[2:]})
+        return
     note = d.get("note")
     n = len(items)
     cw = w / n
     # 数字字号按列宽算：最长的那个数字 + 单位要放得下
-    em = max(text_em(str(i.get("value", ""))) + 0.4 * text_em(" " + i.get("unit", "")) for i in items)
-    vsize = int(min(88, max(36, (cw - 0.45) * 72 / max(em, 1) * 0.85)))
-    vh = vsize / 72 * 1.25
-    f = min(1.3, max(1.0, vsize / 56))
-    th = max((text_height(i["text"], cw - 0.45, 14 * f, 1.2)) if i.get("text") else 0 for i in items)
-    block = vh + 0.15 + 0.2 + 0.5 * f + (th + 0.1 if th else 0)
+    def width(i, vs):  # 数字 + 单位（单位字号是数字的 0.4 倍，最小 11pt）的宽度
+        return (text_em(str(i.get("value", ""))) * vs + text_em(" " + i.get("unit", "")) * max(11, vs * 0.4)) / 72
+    vsize = 88
+    while vsize > 20 and max(width(i, vsize) for i in items) > (cw - 0.45) * 0.85:  # 窄栏（小尺寸模板）允许到 20pt
+        vsize -= 2
     nh = 0.95 if note else 0
-    total = block + (nh + 0.5 if note else 0)
+
+    def layout(vs):  # 这个字号下整块有多高
+        vh = vs / 72 * 1.25
+        f = min(1.3, max(1.0, vs / 56))
+        th = max((text_height(i["text"], cw - 0.45, 14 * f, 1.2)) if i.get("text") else 0 for i in items)
+        block = vh + 0.15 + 0.2 + 0.5 * f + (th + 0.1 if th else 0)
+        return vh, f, th, block, block + (nh + 0.5 if note else 0)
+    vh, f, th, block, total = layout(vsize)
+    while total > h and vsize > 20:  # 高度也不够（两行排）就继续缩数字
+        vsize -= 2
+        vh, f, th, block, total = layout(vsize)
     if total > h:
         WARN.append("大数字页内容超出，删掉说明文字或拆页")
     top = y + max(0, (h - total) / 2)
@@ -152,7 +168,7 @@ def stats(slide, T, a, d):
         pad = 0.3 if i else 0
         text(slide, T, cx + pad, top, cw - pad - 0.15, vh,
              [[(str(it.get("value", "")), {"size": vsize, "bold": True, "color": T.accent}),
-               (" " + it.get("unit", ""), {"size": round(vsize * 0.4), "bold": True, "color": T.accent})]],
+               (" " + it.get("unit", ""), {"size": max(11, round(vsize * 0.4)), "bold": True, "color": T.accent})]],
              size=vsize, fit=False, anchor="b")
         ly = top + vh + 0.15
         hline(slide, T, cx + pad, ly, min(0.7, cw * 0.3), T.primary, 3)
@@ -249,10 +265,22 @@ def compare(slide, T, a, d):
     gap = 0.9
     cw = (w - gap) / 2
     n = max(len(d["left"].get("items", [])), len(d["right"].get("items", [])), 1)
-    longest = max([text_height(t, cw - 1.1, 16) for s in (d["left"], d["right"]) for t in s.get("items", [])] + [0.3])
-    rh0 = max(0.62, longest + 0.25)
-    f = zoom(avail, 0.8 + n * rh0 + 0.3)
-    rh = rh0 * f
+    def row_h(k):  # 字号缩放 k 时，最长一项折行后的行高
+        tw = cw - 0.75 - 0.34 * k
+        longest = max([text_height(t, tw, 16 * k, 1.2) for s in (d["left"], d["right"]) for t in s.get("items", [])]
+                      + [0.3 * k])
+        return max(0.62 * k, longest + 0.2 * k)
+    rh0 = row_h(1)
+    if 0.8 + n * rh0 + 0.35 <= avail:
+        f = zoom(avail, 0.8 + n * rh0 + 0.3)
+        rh = rh0 * f
+    else:  # 放不下（版面矮的模板）：缩小字号、按缩小后的折行重算
+        f = 1.0
+        while f > 0.7 and 0.8 * f + n * row_h(f) + 0.35 > avail:
+            f -= 0.05
+        rh = row_h(f)
+        if 0.8 * f + n * rh + 0.35 > avail:
+            WARN.append("对比页内容超出，删减条目或拆页")
     ph = min(avail, 0.8 * f + n * rh + 0.35)
     top = y + max(0, (avail - ph) / 2)
     for k, (side, good) in enumerate(((d["left"], False), (d["right"], True))):
@@ -265,7 +293,7 @@ def compare(slide, T, a, d):
         for i, it in enumerate(side.get("items", [])):
             iy = top + 0.8 * f + 0.2 + i * rh
             icon(slide, T, "circle-check" if good else "circle-x", cx + 0.3, iy + 0.06, 0.34 * f, "bare")
-            text(slide, T, cx + 0.45 + 0.34 * f, iy, cw - 0.75 - 0.34 * f, rh - 0.05, it, size=round(16 * f),
+            text(slide, T, cx + 0.45 + 0.34 * f, iy, cw - 0.75 - 0.34 * f, rh - 0.05, it, size=max(11, round(16 * f)),
                  color=T.heading if good else T.muted, bold=good, line=1.2, min_size=11)
     vs = circle(slide, T, x + cw + gap / 2 - 0.38, top + ph / 2 - 0.38, 0.76, T.heading)
     label_in(vs, T, d.get("vs", "VS"), 15, T.bg, True, margin=0)

@@ -18,6 +18,7 @@ from pptx.opc.constants import RELATIONSHIP_TYPE as RT
 from pptx.oxml.ns import qn
 
 import draw
+import nav
 import recipes
 from common import emu, inch, iter_shapes, load_json, overlap, save_json, text_em, text_insets, wrap_none, count_lines
 from draw import Theme
@@ -139,10 +140,12 @@ SAFETY = 1.1  # 渲染字体比估算宽一点，留余量
 
 def resize(shape, box, nx, ny, nw, nh):
     """按绝对坐标改位置尺寸；组合内的形状要换算回组合的子坐标"""
-    kx = box[2] / max(1e-6, inch(shape.width)) if shape.width else 1
-    ky = box[3] / max(1e-6, inch(shape.height)) if shape.height else 1
-    shape.left = shape.left + emu((nx - box[0]) / kx)
-    shape.top = shape.top + emu((ny - box[1]) / ky)
+    # 先把四个值都读出来再写：位置继承自版式的占位符，写了 left 以后再读 top 会读到 0
+    left, top, width, height = shape.left, shape.top, shape.width, shape.height
+    kx = box[2] / max(1e-6, inch(width)) if width else 1
+    ky = box[3] / max(1e-6, inch(height)) if height else 1
+    shape.left = left + emu((nx - box[0]) / kx)
+    shape.top = top + emu((ny - box[1]) / ky)
     shape.width = emu(nw / kx)
     shape.height = emu(nh / ky)
 
@@ -158,6 +161,15 @@ def right_limit(slide, box, W):
         if b[1] < box[1] + box[3] and b[1] + b[3] > box[1]:
             lim = min(lim, b[0] - 0.15)
     return lim
+
+
+def push_above(slide, shape, box, dy):
+    for s, b, nested in list(iter_shapes(slide.shapes)):
+        if s is shape or nested or s.shape_type == 6 or not (s.has_text_frame and s.text_frame.text.strip()):
+            continue
+        if box[1] - 0.6 <= b[1] + b[3] <= box[1] + 0.05 and b[1] - dy > 0.15 and overlap(
+                (b[0], 0, b[2], 1), (box[0], 0, box[2], 1)) > 0:
+            resize(s, b, b[0], b[1] - dy, b[2], b[3])  # 四个值一起写：位置继承版式的占位符只改 top 会被挪到最左边
 
 
 def below_neighbor(slide, shape, box):
@@ -178,6 +190,7 @@ def fit_slot(slide, shape, box, base_size, W):
     x, y, w, h = box
     msg = None
     nowrap = wrap_none(shape)
+    wrap2 = False
     need = max(text_em(t) for t in lines) * size / 72 * SAFETY + l_in + r_in
     if nowrap or (len(lines) == 1 and need > w):
         if need > w:
@@ -190,7 +203,16 @@ def fit_slot(slide, shape, box, base_size, W):
             nx = max(min(0.3, x), min(nx, W - min(0.3, W - x - w) - nw))
             resize(shape, box, nx, y, nw, h)
             box = (nx, y, nw, h)
-            if need > nw + 0.01:
+            # 会换行的框：折成两行比缩成小字好（标题旁边常有产品图、logo 挡着加宽）
+            wrap2 = not nowrap and len(lines) == 1 and need <= 2 * (nw - l_in - r_in) / SAFETY + l_in + r_in
+            if wrap2 and need > nw + 0.01:  # 在空格 / 标点处断开，别把词拆散；没有好断点就缩字
+                two = split_balanced(lines[0])
+                if len(two) == 2:
+                    lines = two
+                    set_lines(shape, lines)
+                elif (nw - l_in - r_in) / (need - l_in - r_in) >= 0.75:
+                    wrap2 = False  # 缩到 75% 以上还能放下：缩字比随便断行好看
+            if need > nw + 0.01 and not wrap2:
                 k = max(0.5, (nw - l_in - r_in) / (need - l_in - r_in))
                 scale_font(shape, k, base_size)
                 size *= k
@@ -199,19 +221,32 @@ def fit_slot(slide, shape, box, base_size, W):
     nl = len(lines) if nowrap else sum(count_lines(t, body_w, size) for t in lines)
     need_h = nl * size * 1.32 / 72 + t_in + b_in
     if need_h > box[3] + 0.05:
-        if nl > 1 and len(lines) > 1 or nowrap:
+        if nl > 1 and len(lines) > 1 or nowrap or wrap2:
             # 多行标题：下面有字就往上长，否则往下长
             up = below_neighbor(slide, shape, box)
             ny = box[1] - (need_h - box[3]) if up else box[1]
+            if up:  # 往上长时，紧贴在上面的眉题、小字一起往上推，别被压住
+                push_above(slide, shape, box, box[1] - max(0.2, ny))
             resize(shape, box, box[0], max(0.2, ny), box[2], need_h)
         elif need_h > box[3] * 1.25 + 0.1:
             k = 1.0
             while k > 0.6 and nl * size * k * 1.2 / 72 + t_in + b_in > box[3] * 1.25 + 0.1:
                 k -= 0.05
                 nl = sum(count_lines(t, body_w, size * k) for t in lines)
-            scale_font(shape, k, base_size)
-            msg = f"缩字 {k:.0%}"
+            if k < 1:
+                scale_font(shape, k, base_size)
+                msg = f"缩字 {k:.0%}"
     return msg
+
+
+def split_balanced(text):
+    """一行标题折成两行：在最靠中间的空格、标点、破折号后断开；找不到合适的断点返回原文（交给缩字）"""
+    cuts = [m.end() if m.group(0).strip() else m.start() for m in re.finditer(r"\s+|[，、：；,:;·]|——", text)]
+    cuts = [c for c in cuts if 0.25 * len(text) < c < 0.75 * len(text)]
+    if not cuts:
+        return [text]
+    c = min(cuts, key=lambda k: abs(text_em(text[:k]) - text_em(text[k:])))
+    return [text[:c].strip(), text[c:].strip()]
 
 
 def shape_in_group(shape):
@@ -259,6 +294,8 @@ def apply_slots(slide, spec, prof_slide, W, log):
                 log.append(f"模板第 {prof_slide['index']} 页没有 {k} 槽位，{k} 未使用")
             continue
         targets = slots[k] if isinstance(slots[k], list) else [slots[k]]
+        if not targets and spec.get(k):
+            log.append(f"模板第 {prof_slide['index']} 页的 {k} 槽位是空的，{k} 未使用")
         vals = spec[k] if isinstance(spec[k], list) and isinstance(slots[k], list) else [spec[k]]
         for i, key in enumerate(targets):
             if i < len(vals):
@@ -267,9 +304,20 @@ def apply_slots(slide, spec, prof_slide, W, log):
                 fill_slot(slide, key, vals[i], W, log)
                 filled.add(key)
             # 没给值的槽位不在这里删：后面统一只删「示例字」，品牌名、口号这类模板原文保留
-    if prof_slide["role"] == "toc" and "items" in spec:
-        fill_toc(slide, spec["items"], slots, W, log)
+    if prof_slide["role"] == "section" and str(spec.get("number", "")).isdigit() and "kicker" not in spec:
+        renumber_kickers(slide, slots.get("kicker", []), int(spec["number"]))
+    if (prof_slide["role"] == "toc" or prof_slide.get("agenda")) and "items" in spec:
+        fill_toc(slide, spec["items"], slots, W, log, prof_slide, spec.get("current"))
         filled |= set(slots.get("items", [])) | set(slots.get("numbers", [])) | set(slots.get("item_subs", []))
+    trk = prof_slide.get("tracker")
+    if trk:
+        filled |= set(trk["items"])
+        if "tracker" not in spec:
+            log.append(f"模板这一页有进度标签 {trk['items']}，deck.json 没写 tracker：标签保留了模板原文")
+        else:
+            t = spec["tracker"] or {}
+            nav.fill_tracker(slide, trk, [str(x) for x in t.get("items") or []], t.get("current"), find_shape, remove,
+                             log)
     for k, v in (spec.get("slots") or {}).items():
         fill_slot(slide, k, v, W, log)
         filled.add(k)
@@ -278,12 +326,36 @@ def apply_slots(slide, spec, prof_slide, W, log):
         if t["key"] in filled or t["key"] in keep:
             continue
         # 章节页、内容页上没填的副标题、日期位也是示例字（封面上常是装饰大字，不动）
-        unfilled = prof_slide["role"] in ("section", "content") and any(
+        unfilled = prof_slide["role"] in ("section", "content", "quote") and any(
             t["key"] in (slots[k] if isinstance(slots[k], list) else [slots[k]]) for k in ("subtitle", "meta") if k in slots)
         if SAMPLE_RE.search(t["text"] or "") or not t["text"] or unfilled:
             shape, _, _ = find_shape(slide, t["key"])
             if shape is not None:
                 remove(shape)
+
+
+EN_NUM = ["ZERO", "ONE", "TWO", "THREE", "FOUR", "FIVE", "SIX", "SEVEN", "EIGHT", "NINE", "TEN", "ELEVEN", "TWELVE"]
+
+
+def renumber_kickers(slide, keys, n):
+    """章节页上整段是「CHAPTER ONE」「PART 01」这种章节序号的眉题，序号改成当前章（保留原大小写）"""
+    words = "|".join(EN_NUM[1:])
+    pat = re.compile(rf"^(\s*(?:PART|CHAPTER|SECTION|CH\.?|NO\.?)\s*)({words}|\d{{1,2}})(\s*)$", re.I)
+    for key in keys:
+        shape, _, _ = find_shape(slide, key)
+        if shape is None:
+            continue
+        for t in shape._element.iter(qn("a:t")):
+            m = pat.match(t.text or "")
+            if not m:
+                continue
+            old = m.group(2)
+            if old.isdigit():
+                new = f"{n:0{len(old)}d}"
+            else:
+                new = EN_NUM[n] if n < len(EN_NUM) else str(n)
+                new = new.lower() if old.islower() else (new.title() if old.istitle() else new)
+            t.text = m.group(1) + new + m.group(3)
 
 
 def drop_title_decor(slide, key):
@@ -302,8 +374,29 @@ def drop_title_decor(slide, key):
             remove(s)
 
 
-def fill_toc(slide, items, slots, W, log):
+def fill_toc(slide, items, slots, W, log, prof_slide=None, current=None):
     keys, nums, subs = slots.get("items", []), slots.get("numbers", []), slots.get("item_subs", [])
+    prof_slide = prof_slide or {}
+    i0 = prof_slide.get("toc_current")
+    titles = [str((x[0] if x else "") if isinstance(x, list) else x) for x in items]
+    if prof_slide.get("toc_mode") == "paragraphs":  # 一个文本框里一段一个议题
+        nav.fill_paragraphs(slide, keys[0], titles, current, i0, prof_slide.get("toc_mark"), find_shape, log)
+        return
+    if i0 is not None:  # 模板高亮了某一项（议程式章节页）：高亮跟着当前章节走，没有当前章就都用普通样式
+        n = min(len(titles), len(keys))
+        for i in range(n, len(keys)):  # 先删多余条目（连同序号、说明、装饰），再填字
+            drop_toc_entry(slide, keys[i], nums[i] if i < len(nums) else None, subs[i] if i < len(subs) else None)
+        nav.fill_tracker(slide, {"items": keys[:n], "current": i0, "mark": None, "axis": "col"}, titles[:n], current,
+                         find_shape, remove, log, label="议程")
+        if nums:
+            nav.fill_tracker(slide, {"items": nums[:n], "current": i0, "mark": None, "axis": "col"},
+                             [f"{i + 1:02d}" for i in range(min(n, len(nums)))], current, find_shape, remove, log,
+                             label="议程序号")
+        for i in range(min(n, len(subs))):
+            if subs[i]:
+                v = items[i] if isinstance(items[i], list) else [items[i]]
+                fill_slot(slide, subs[i], v[1] if len(v) > 1 and v[1] else None, W, log)
+        return
     if len(items) > len(keys):
         log.append(f"目录有 {len(items)} 项，模板只有 {len(keys)} 个位置：多出的没放进去（请合并章节）")
     for i, key in enumerate(keys):
@@ -409,6 +502,7 @@ def build(deck_path, out=None):
                 remove(shape)
         apply_slots(slide, spec, ps, W, log)
         area = body_area(spec, ps, W, H)
+        area0 = area  # 原始内容区（lint 检查新内容有没有画出界）
         before = set(slide.shapes._spTree)  # 持有节点引用：lxml 代理对象的 id() 不稳定
         fix_paths(spec.get("body"), rel)
         if spec.get("body") or spec.get("lead") or spec.get("conclusion"):
@@ -430,7 +524,7 @@ def build(deck_path, out=None):
         if spec.get("notes"):
             slide.notes_slide.notes_text_frame.text = spec["notes"]
         msgs = log + list(draw.WARN)
-        report["slides"].append({"page": i + 1, "from": fi, "role": ps["role"], "area": list(area),
+        report["slides"].append({"page": i + 1, "from": fi, "role": ps["role"], "area": list(area0),
                                  "body": (spec.get("body") or {}).get("type"), "messages": msgs})
         for m in msgs:
             report["warnings"].append(f"第 {i + 1} 页：{m}")

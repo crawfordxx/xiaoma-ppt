@@ -8,6 +8,7 @@ examples/*/out/lint-render/
 examples/*/out/*.build.json
 examples/*/out/*.lint.json
 examples/*/work/template-render/
+examples/*/work/template-original/
 work/
 out/
 !examples/*/work/
